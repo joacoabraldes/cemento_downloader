@@ -56,6 +56,17 @@ def latest_valor(conn, fecha: date, estado):
         return row[0] if row else None
 
 
+def has_definitivo(conn, fecha: date) -> bool:
+    """True si el mes ya tiene un snapshot definitivo (dato final, no vuelve a cambiar)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select 1 from cemento_despacho "
+            "where date = %s and estado = 'definitivo' limit 1",
+            (fecha,),
+        )
+        return cur.fetchone() is not None
+
+
 def insert_snapshot(conn, fecha: date, valor: float, estado, fuente=None):
     """Inserta un snapshot. Devuelve el id insertado."""
     with conn.cursor() as cur:

@@ -32,6 +32,11 @@ def month_iter(end: date, n: int):
 
 def process_month(conn, fecha: date, *, force: bool):
     """Trae provisorio y definitivo del mes y los snapshotea si corresponde."""
+    # Si el mes ya tiene definitivo, el dato es final: no hace falta volver a
+    # bajar las páginas de AFCP (salvo --force).
+    if not force and db.has_definitivo(conn, fecha):
+        print(f"  {fecha:%Y-%m} ya tiene definitivo -> skip")
+        return
     for estado, getter in (("provisorio", afcp.get_provisorio),
                             ("definitivo", afcp.get_definitivo)):
         try:

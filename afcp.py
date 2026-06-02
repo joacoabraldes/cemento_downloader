@@ -20,6 +20,10 @@ BASE = "https://afcp.info/ESTADISTICAS"
 HEADERS = {"User-Agent": "Mozilla/5.0 (cemento_downloader ETL)"}
 TIMEOUT = 30
 
+# Sesión compartida: reutiliza la conexión TCP/TLS (keep-alive) entre meses.
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+
 MESES = {
     1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
     7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre",
@@ -42,7 +46,7 @@ def url_definitivo(year: int, month: int) -> str:
 
 def fetch(url: str):
     """GET de la url. Devuelve el texto (HTML) o None si no existe (404) aún."""
-    resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    resp = SESSION.get(url, timeout=TIMEOUT)
     if resp.status_code == 404:
         return None
     resp.raise_for_status()
