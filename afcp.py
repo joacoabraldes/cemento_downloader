@@ -61,14 +61,6 @@ def _text_lines(html: str):
     return [ln.strip() for ln in text.splitlines() if ln.strip()]
 
 
-def _next_number(lines, start_idx):
-    """Primer número entero (con separador de miles) a partir de start_idx."""
-    for ln in lines[start_idx:]:
-        if NUM_RE.match(ln):
-            return _to_miles(_parse_number(ln))
-    return None
-
-
 def _to_miles(toneladas: float) -> float:
     """Convierte toneladas a miles de toneladas (unidad del xlsx)."""
     return round(toneladas / 1000.0, 3)
@@ -82,59 +74,102 @@ def _parse_number(raw: str) -> float:
     return float(cleaned)
 
 
+def _collect_numbers(lines, start_idx, n):
+    """Primeros n números enteros (con separador de miles) desde start_idx, ya en
+    miles de toneladas."""
+    out = []
+    for ln in lines[start_idx:]:
+        if NUM_RE.match(ln):
+            out.append(_to_miles(_parse_number(ln)))
+            if len(out) >= n:
+                break
+    return out
+
+
 def _anchor_despacho(lines):
     """Índice de la primera fila 'Despacho Nacional' (encabezado de la tabla de
-    despacho). Anclamos ahí para no confundirnos con la tabla de CONSUMO."""
+    Despacho de Cemento). Anclamos ahí para saltar el título de la página."""
     for i, ln in enumerate(lines):
         if re.search(r"despacho\s+nacional", ln, re.IGNORECASE):
             return i
     return 0
 
 
-def parse_provisorio(html: str, year: int, month: int):
-    """Despacho Nacional del Mes (miles de tn) de la página provisoria.
+def _anchor_consumo(lines):
+    """Índice donde empieza la tabla de Consumo del Mercado Interno. La fila de
+    'Importaciones' (Propias) aparece en ambas páginas y marca esa sección."""
+    for i, ln in enumerate(lines):
+        if re.search(r"importaciones", ln, re.IGNORECASE):
+            return i
+    return len(lines)
 
-    Layout: tras anclar en la tabla de despacho, la fila del período objetivo está
-    etiquetada como "<Mes> <Año>" (ej: "Abril 2026") y el primer número que sigue
-    es el Despacho Nacional Mensual.
+
+def _find_label(lines, matcher, start):
+    """Primera línea >= start que cumple matcher (la etiqueta de período)."""
+    for i in range(start, len(lines)):
+        if matcher(lines[i]):
+            return i
+    return None
+
+
+def _extract_fields(lines, matcher):
+    """Extrae los 4 valores 'Del Mes' (miles de tn) usando el matcher de la etiqueta
+    de período. Tras cada etiqueta los números van en el orden
+    [nacional_mes, nacional_acum, otro_mes, otro_acum, total_mes, total_acum], así que
+    tomamos los índices 0 (nacional) y 2 (exportación / importaciones)."""
+    desp_i = _find_label(lines, matcher, _anchor_despacho(lines))
+    cons_i = _find_label(lines, matcher, _anchor_consumo(lines))
+    desp = _collect_numbers(lines, desp_i + 1, 3) if desp_i is not None else []
+    cons = _collect_numbers(lines, cons_i + 1, 3) if cons_i is not None else []
+
+    def pick(seq, idx):
+        return seq[idx] if len(seq) > idx else None
+
+    fields = {
+        "despacho_nacional": pick(desp, 0),
+        "exportacion": pick(desp, 2),
+        "consumo_despacho_nacional": pick(cons, 0),
+        "importaciones_propias": pick(cons, 2),
+    }
+    # Si no encontramos ni el dato principal, el mes no está publicado en esa página.
+    return fields if fields["despacho_nacional"] is not None else None
+
+
+def parse_provisorio(html: str, year: int, month: int):
+    """Dict de campos (miles de tn) de la página provisoria.
+
+    La fila del período se etiqueta como "<Mes> <Año>" (ej: "Abril 2026").
     """
     lines = _text_lines(html)
-    start = _anchor_despacho(lines)
     label = f"{MESES[month]} {year}".lower()
-    for i in range(start, len(lines)):
-        if lines[i].lower() == label:
-            return _next_number(lines, i + 1)
-    return None
+    return _extract_fields(lines, lambda ln: ln.lower() == label)
 
 
 def parse_definitivo(html: str, year: int, month: int):
-    """Despacho Nacional del Mes (miles de tn) de la página definitiva.
+    """Dict de campos (miles de tn) de la página definitiva.
 
-    Layout: la página es específica del mes (la URL ya trae YYYYMM) y compara
-    "Año <anterior>" vs "Año <actual>". La fila "Año <year>" da el definitivo del
-    mes; el primer número que sigue es el Despacho Nacional Del Mes. Matcheamos por
-    el año (evitamos depender de la 'ñ' por temas de encoding).
+    La página compara "Año <anterior>" vs "Año <actual>"; matcheamos la fila del año
+    objetivo (por el año, no por la palabra "Año", para no depender de la 'ñ').
     """
     lines = _text_lines(html)
-    start = _anchor_despacho(lines)
     target = str(year)
-    for i in range(start, len(lines)):
-        ln = lines[i]
-        # línea tipo "Año 2026": termina en el año y no contiene otros dígitos.
-        if ln.endswith(target) and re.sub(r"\D", "", ln) == target and len(ln) <= 14:
-            return _next_number(lines, i + 1)
-    return None
+
+    def matcher(ln):
+        # "Año 2026": termina en el año y no contiene otros dígitos.
+        return ln.endswith(target) and re.sub(r"\D", "", ln) == target and len(ln) <= 14
+
+    return _extract_fields(lines, matcher)
 
 
 def get_provisorio(year: int, month: int):
-    """Devuelve (valor_miles_tn, url) del provisorio, o (None, url) si no está publicado."""
+    """Devuelve (dict_campos, url) del provisorio, o (None, url) si no está publicado."""
     url = url_provisorio(year, month)
     html = fetch(url)
     return (parse_provisorio(html, year, month) if html else None), url
 
 
 def get_definitivo(year: int, month: int):
-    """Devuelve (valor_miles_tn, url) del definitivo, o (None, url) si no está publicado."""
+    """Devuelve (dict_campos, url) del definitivo, o (None, url) si no está publicado."""
     url = url_definitivo(year, month)
     html = fetch(url)
     return (parse_definitivo(html, year, month) if html else None), url

@@ -67,29 +67,67 @@ def has_definitivo(conn, fecha: date) -> bool:
         return cur.fetchone() is not None
 
 
-def insert_snapshot(conn, fecha: date, valor: float, estado, fuente=None):
+def latest_fields(conn, fecha: date, estado):
+    """Tupla (valor, exportacion, consumo_despacho_nacional, importaciones_propias)
+    del último snapshot para (fecha, estado), o None si no hay."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select valor, exportacion, consumo_despacho_nacional, importaciones_propias "
+            "from cemento_despacho where date = %s and estado = %s "
+            "order by ingested_at desc limit 1",
+            (fecha, estado),
+        )
+        return cur.fetchone()
+
+
+def insert_snapshot(conn, fecha: date, valor: float, estado, fuente=None, *,
+                    exportacion=None, consumo_despacho_nacional=None,
+                    importaciones_propias=None):
     """Inserta un snapshot. Devuelve el id insertado."""
     with conn.cursor() as cur:
         cur.execute(
-            "insert into cemento_despacho (date, valor, estado, fuente) "
-            "values (%s, %s, %s, %s) returning id",
-            (fecha, valor, estado, fuente),
+            "insert into cemento_despacho "
+            "(date, valor, estado, fuente, exportacion, consumo_despacho_nacional, "
+            " importaciones_propias) "
+            "values (%s, %s, %s, %s, %s, %s, %s) returning id",
+            (fecha, valor, estado, fuente, exportacion, consumo_despacho_nacional,
+             importaciones_propias),
         )
         new_id = cur.fetchone()[0]
     conn.commit()
     return new_id
 
 
-def insert_if_changed(conn, fecha: date, valor: float, estado, fuente=None,
-                      *, force=False, tol=1e-6):
-    """Inserta un snapshot sólo si es nuevo o el valor cambió (salvo force=True).
+def _same(prev, new, tol):
+    """True si dos tuplas de valores (con posibles None) son iguales dentro de tol."""
+    for a, b in zip(prev, new):
+        if a is None and b is None:
+            continue
+        if a is None or b is None or abs(a - b) > tol:
+            return False
+    return True
 
-    Devuelve "inserted", "unchanged" o "skipped".
+
+def insert_if_changed(conn, fecha: date, fields: dict, estado, fuente=None,
+                      *, force=False, tol=1e-6):
+    """Inserta un snapshot sólo si es nuevo o cambió algún campo (salvo force=True).
+
+    `fields` es el dict del parser (despacho_nacional + 3 campos). Devuelve
+    "inserted", "unchanged" o "skipped".
     """
+    valor = fields.get("despacho_nacional")
     if valor is None:
         return "skipped"
-    prev = latest_valor(conn, fecha, estado)
-    if not force and prev is not None and abs(prev - valor) <= tol:
+    new = (
+        valor,
+        fields.get("exportacion"),
+        fields.get("consumo_despacho_nacional"),
+        fields.get("importaciones_propias"),
+    )
+    prev = latest_fields(conn, fecha, estado)
+    if not force and prev is not None and _same(prev, new, tol):
         return "unchanged"
-    insert_snapshot(conn, fecha, valor, estado, fuente)
+    insert_snapshot(conn, fecha, valor, estado, fuente,
+                    exportacion=new[1], consumo_despacho_nacional=new[2],
+                    importaciones_propias=new[3])
     return "inserted"
