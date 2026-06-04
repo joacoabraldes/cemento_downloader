@@ -61,26 +61,26 @@ def _text_lines(html: str):
     return [ln.strip() for ln in text.splitlines() if ln.strip()]
 
 
-def _to_miles(toneladas: float) -> float:
-    """Convierte toneladas a miles de toneladas (unidad del xlsx)."""
-    return round(toneladas / 1000.0, 3)
+def _value_as_shown(raw: str) -> float:
+    """Valor tal como aparece en la tabla de AFCP.
 
-
-def _parse_number(raw: str) -> float:
-    """Convierte un número con separadores AR/EN ('730.644' / '730,644') a float
-    de toneladas. En estas páginas los valores son enteros de toneladas con
-    separador de miles, así que quitamos puntos y comas."""
-    cleaned = re.sub(r"[^\d]", "", raw)
-    return float(cleaned)
+    En estas páginas el "." es separador de miles. Un número con separador
+    (ej. "730.432" = 730432 t) se interpreta como se ve, o sea en miles (730.432);
+    un número sin separador (ej. "212") se deja tal cual (212). Así el dato queda
+    idéntico al mostrado en la planilla."""
+    digits = re.sub(r"[^\d]", "", raw)
+    value = float(digits)
+    if "." in raw:
+        value /= 1000.0
+    return round(value, 3)
 
 
 def _collect_numbers(lines, start_idx, n):
-    """Primeros n números enteros (con separador de miles) desde start_idx, ya en
-    miles de toneladas."""
+    """Primeros n números desde start_idx, tal como se muestran en la tabla."""
     out = []
     for ln in lines[start_idx:]:
         if NUM_RE.match(ln):
-            out.append(_to_miles(_parse_number(ln)))
+            out.append(_value_as_shown(ln))
             if len(out) >= n:
                 break
     return out
@@ -113,8 +113,8 @@ def _find_label(lines, matcher, start):
 
 
 def _extract_fields(lines, matcher):
-    """Extrae los 4 valores 'Del Mes' (miles de tn) usando el matcher de la etiqueta
-    de período. Tras cada etiqueta los números van en el orden
+    """Extrae los 4 valores 'Del Mes' (tal como se muestran) usando el matcher de la
+    etiqueta de período. Tras cada etiqueta los números van en el orden
     [nacional_mes, nacional_acum, otro_mes, otro_acum, total_mes, total_acum], así que
     tomamos los índices 0 (nacional) y 2 (exportación / importaciones)."""
     desp_i = _find_label(lines, matcher, _anchor_despacho(lines))
@@ -136,13 +136,20 @@ def _extract_fields(lines, matcher):
 
 
 def parse_provisorio(html: str, year: int, month: int):
-    """Dict de campos (miles de tn) de la página provisoria.
+    """Dict con SOLO el Despacho Nacional de la página provisoria.
 
-    La fila del período se etiqueta como "<Mes> <Año>" (ej: "Abril 2026").
+    Los campos adicionales (exportación, consumo, importaciones) se toman únicamente
+    del definitivo; en el provisorio quedan en None. La fila del período se etiqueta
+    como "<Mes> <Año>" (ej: "Abril 2026").
     """
     lines = _text_lines(html)
     label = f"{MESES[month]} {year}".lower()
-    return _extract_fields(lines, lambda ln: ln.lower() == label)
+    desp_i = _find_label(lines, lambda ln: ln.lower() == label, _anchor_despacho(lines))
+    nums = _collect_numbers(lines, desp_i + 1, 1) if desp_i is not None else []
+    if not nums:
+        return None
+    return {"despacho_nacional": nums[0], "exportacion": None,
+            "consumo_despacho_nacional": None, "importaciones_propias": None}
 
 
 def parse_definitivo(html: str, year: int, month: int):
